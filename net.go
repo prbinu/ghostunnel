@@ -18,6 +18,9 @@ package main
 
 import (
 	"crypto/tls"
+	"errors"
+	"fmt"
+	"github.com/miekg/dns"
 	"io"
 	"net"
 	"strings"
@@ -148,27 +151,72 @@ func copyData(dst net.Conn, src net.Conn) {
 	}
 }
 
+func Resolve(host string, resolver string) (ip string, e error) {
+	e = nil
+	m := new(dns.Msg)
+	// TODO: validate hostname ? and also support AAAA record?
+	m.SetQuestion(host+".", dns.TypeA)
+
+	c := new(dns.Client)
+	r, _, err := c.Exchange(m, resolver)
+	if err != nil {
+		fmt.Printf("failed to exchange: %v", err)
+		e = err
+	}
+	if r == nil {
+		fmt.Printf("response is nil")
+		e = errors.New("lookup failed")
+	}
+	if r.Rcode != dns.RcodeSuccess {
+		fmt.Printf("failed to get an valid answer\n%v", r)
+		e = errors.New("lookup failed")
+	}
+
+	if t, ok := r.Answer[0].(*dns.A); ok {
+		fmt.Println("DNS resolve: ", t.A)
+		ip = t.A.String()
+	}
+
+	return
+}
+
 // Parse a string representing a TCP address or UNIX socket for our backend
 // target. The input can be or the form "HOST:PORT" for TCP or "unix:PATH"
 // for a UNIX socket.
-func parseUnixOrTCPAddress(input string) (network, address, host string, err error) {
+func parseUnixOrTCPAddress(input string, resolvers []string) (network, address, host string, err error) {
 	if strings.HasPrefix(input, "unix:") {
 		network = "unix"
 		address = input[5:]
 		return
 	}
 
-	host, _, err = net.SplitHostPort(input)
+	host, port, err := net.SplitHostPort(input)
 	if err != nil {
 		return
 	}
 
-	// Make sure target address resolves
-	_, err = net.ResolveTCPAddr("tcp", input)
-	if err != nil {
-		return
+	if validateUnixOrLocalhost(input) {
+		// Make sure target address resolves
+		_, err = net.ResolveTCPAddr("tcp", input)
+		if err != nil {
+			return
+		}
+		network, address = "tcp", input
+
+	} else {
+
+		ip := ""
+		for _, d := range resolvers {
+			fmt.Printf("Trying DNS resolver: %s ..\n", d)
+
+			fmt.Println("")
+			ip, err = Resolve(host, d)
+			if err == nil {
+				break
+			}
+		}
+		network, address = "tcp", ip+":"+port
 	}
 
-	network, address = "tcp", input
 	return
 }

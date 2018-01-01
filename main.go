@@ -72,6 +72,9 @@ var (
 	clientAllowedIPs     = clientCommand.Flag("verify-ip-san", "Allow servers with given IP subject alternative name (can be repeated).").PlaceHolder("SAN").IPList()
 	clientAllowedURIs    = clientCommand.Flag("verify-uri-san", "Allow servers with given URI subject alternative name (can be repeated).").PlaceHolder("SAN").Strings()
 
+	// DNS resolver to override default name resoltion mechanism (/etc/nsswitch..conf, /etc/hosts, /etc/resolv.conf)
+	targetDNSResolvers = app.Flag("target-dns-resolver", "DNS resolvers for forward connections to (HOST:PORT) (can be repeated).").PlaceHolder("IP:PORT").Strings()
+
 	// TLS options
 	keystorePath        = app.Flag("keystore", "Path to certificate and keystore (PEM with certificate/key, or PKCS12).").PlaceHolder("PATH").Required().String()
 	keystorePass        = app.Flag("storepass", "Password for certificate and keystore (optional).").PlaceHolder("PASS").String()
@@ -152,7 +155,7 @@ func validateUnixOrLocalhost(addr string) bool {
 	if strings.HasPrefix(addr, "unix:") {
 		return true
 	}
-	if strings.HasPrefix(addr, "127.0.0.1:") {
+	if strings.HasPrefix(addr, "127.") {
 		return true
 	}
 	if strings.HasPrefix(addr, "[::1]:") {
@@ -296,7 +299,7 @@ func run(args []string) error {
 			return err
 		}
 
-		network, address, host, err := parseUnixOrTCPAddress(*clientForwardAddress)
+		network, address, host, err := parseUnixOrTCPAddress(*clientForwardAddress, *targetDNSResolvers)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: invalid target address: %s\n", err)
 			return err
@@ -373,7 +376,7 @@ func serverListen(context *Context) error {
 // Open listening socket in client mode.
 func clientListen(context *Context) error {
 	// Setup listening socket
-	network, address, _, err := parseUnixOrTCPAddress(*clientListenAddress)
+	network, address, _, err := parseUnixOrTCPAddress(*clientListenAddress, []string{})
 	if err != nil {
 		logger.Printf("error parsing client listen address: %s", err)
 		return err
@@ -436,7 +439,7 @@ func (context *Context) serveStatus() error {
 	config.ClientAuth = tls.NoClientCert
 	config.GetCertificate = context.cert.getCertificate
 
-	network, address, _, err := parseUnixOrTCPAddress(*statusAddress)
+	network, address, _, err := parseUnixOrTCPAddress(*statusAddress, []string{})
 	if err != nil {
 		return err
 	}
@@ -475,7 +478,7 @@ func (context *Context) serveStatus() error {
 
 // Get backend dialer function in server mode (connecting to a unix socket or tcp port)
 func serverBackendDialer() (func() (net.Conn, error), error) {
-	backendNet, backendAddr, _, err := parseUnixOrTCPAddress(*serverForwardAddress)
+	backendNet, backendAddr, _, err := parseUnixOrTCPAddress(*serverForwardAddress, *targetDNSResolvers)
 	if err != nil {
 		return nil, err
 	}
@@ -499,7 +502,6 @@ func clientBackendDialer(cert *certificate, network, address, host string) (func
 	}
 
 	config.VerifyPeerCertificate = verifyPeerCertificateClient
-
 	var dialer Dialer = &net.Dialer{Timeout: *timeoutDuration}
 
 	if *clientConnectProxy != nil {
